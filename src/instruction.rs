@@ -41,9 +41,61 @@ impl AssignInst {
 }
 
 #[derive(Debug)]
+pub struct AddInst {
+    dest: Value,
+    lhs: Value,
+    rhs: Value,
+    type_: MIRType,
+}
+
+impl AddInst {
+    pub fn new(dest: Value, lhs: Value, rhs: Value, type_: MIRType) -> Self {
+        AddInst {
+            dest,
+            lhs,
+            rhs,
+            type_,
+        }
+    }
+
+    pub fn get_lhs(&self) -> &Value {
+        &self.lhs
+    }
+
+    pub fn get_rhs(&self) -> &Value {
+        &self.rhs
+    }
+
+    pub fn get_type(&self) -> MIRType {
+        self.type_
+    }
+
+    pub fn get_dest(&self) -> &Value {
+        &self.dest
+    }
+}
+
+#[derive(Debug)]
+pub struct RetInst {
+    value: Value,
+}
+
+impl RetInst {
+    pub fn new(value: Value) -> Self {
+        RetInst { value }
+    }
+
+    pub fn get_value(&self) -> &Value {
+        &self.value
+    }
+}
+
+#[derive(Debug)]
 pub enum Instruction {
     Define(DefineInst),
     Assign(AssignInst),
+    Add(AddInst),
+    Ret(RetInst),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

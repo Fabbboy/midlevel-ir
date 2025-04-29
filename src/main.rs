@@ -2,12 +2,15 @@ use std::collections::HashMap;
 
 use function::{Block, Function};
 use inkwell::{
+    OptimizationLevel,
     builder::Builder,
     context::Context,
+    passes::{PassBuilderOptions, PassManager},
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
     types::{BasicType, BasicTypeEnum},
     values::{BasicValue, BasicValueEnum},
 };
-use instruction::{AssignInst, DefineInst, InstId, Instruction};
+use instruction::{AddInst, DefineInst, InstId, Instruction, RetInst};
 use module::Module;
 use types::MIRType;
 use value::Value;
@@ -79,6 +82,71 @@ fn compile_block<'f, 'ctx>(block: &'f Block, func: &'f Function, codegen: &'f mu
                     .build_store(dest.into_pointer_value(), src)
                     .expect("Failed to store value");
             }
+            Instruction::Add(add_inst) => {
+                // 1) Get the pointer for the destination
+                let dest_ptr = match add_inst.get_dest() {
+                    Value::Instruction(dest_id) => {
+                        codegen.namend.get(dest_id).unwrap().into_pointer_value()
+                    }
+                    _ => unreachable!(),
+                };
+
+                // 2) LOAD LHS
+                let lhs_val = match add_inst.get_lhs().clone() {
+                    Value::Instruction(id) => {
+                        let ptr = codegen.namend.get(&id).unwrap().into_pointer_value();
+                        codegen
+                            .llvm_builder
+                            .build_load(to_llvm_type(add_inst.get_type(), codegen), ptr, "lhs_load")
+                            .unwrap()
+                            .into_int_value()
+                    }
+                    Value::ConstantInt(lit) => {
+                        // make sure you use i32_type() if your MIRType::Int32
+                        codegen.llvm_ctx.i32_type().const_int(lit as u64, false)
+                    }
+                    _ => unreachable!(),
+                };
+
+                // 3) LOAD or CONST RHS (similarly)
+                let rhs_val = match add_inst.get_rhs().clone() {
+                    Value::Instruction(id) => {
+                        let ptr = codegen.namend.get(&id).unwrap().into_pointer_value();
+                        codegen
+                            .llvm_builder
+                            .build_load(to_llvm_type(add_inst.get_type(), codegen), ptr, "rhs_load")
+                            .unwrap()
+                            .into_int_value()
+                    }
+                    Value::ConstantInt(lit) => {
+                        codegen.llvm_ctx.i32_type().const_int(lit as u64, false)
+                    }
+                    _ => unreachable!(),
+                };
+
+                // 4) BUILD THE ACTUAL ADD INSTRUCTION
+                let sum = codegen
+                    .llvm_builder
+                    .build_int_add(lhs_val, rhs_val, "add")
+                    .unwrap();
+
+                // 5) STORE THE RESULT BACK
+                codegen
+                    .llvm_builder
+                    .build_store(dest_ptr, sum)
+                    .expect("store sum");
+
+                // 6) And—very important—remember to put *this* result into your map
+                codegen.namend.insert(inst_id, sum.as_basic_value_enum());
+            }
+
+            Instruction::Ret(ret_inst) => {
+                let ret_value = to_llvm_value(ret_inst.get_value().clone(), codegen);
+                codegen
+                    .llvm_builder
+                    .build_return(Some(&ret_value))
+                    .expect("Failed to build return");
+            }
         }
     }
 }
@@ -127,17 +195,35 @@ fn main() {
     let block = function.get_block_mut(entry_handle).unwrap();
     block.adjust_range(define_inst_id);
 
-    let assign_inst = Instruction::Assign(AssignInst::new(
+    let new_define_inst = Instruction::Define(DefineInst::new(
+        MIRType::Int32,
         Value::Instruction(define_inst_id),
-        Value::ConstantInt(420),
+    ));
+    let new_define_inst_id = function.add_instruction(new_define_inst);
+    let block = function.get_block_mut(entry_handle).unwrap();
+    block.adjust_range(new_define_inst_id);
+
+    let add_inst = Instruction::Add(AddInst::new(
+        Value::Instruction(define_inst_id),
+        Value::Instruction(new_define_inst_id),
+        Value::ConstantInt(2),
+        MIRType::Int32,
     ));
 
-    let assign_inst_id = function.add_instruction(assign_inst);
+    let add_inst_id = function.add_instruction(add_inst);
     let block = function.get_block_mut(entry_handle).unwrap();
-    block.adjust_range(assign_inst_id);
+    block.adjust_range(add_inst_id);
+
+    let ret_inst = Instruction::Ret(RetInst::new(Value::Instruction(add_inst_id)));
+    let ret_inst_id = function.add_instruction(ret_inst);
+    let block = function.get_block_mut(entry_handle).unwrap();
+    block.adjust_range(ret_inst_id);
 
     println!("{:#?}", module);
 
     compile(&module, &mut codeg); //here
-    codeg.llvm_mod.print_to_stderr();
+    codeg.llvm_mod.verify().unwrap();
+    codeg
+        .llvm_mod
+        .print_to_stderr();
 }
